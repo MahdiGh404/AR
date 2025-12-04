@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
+    <title>Web AR - Image Tracking</title>
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            overflow: hidden;
+            background: #000;
+        }
+
+        /* AR Container - Full screen */
+        #ar-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+
+        /* Status Messages */
+        #status {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 14px;
+            z-index: 100;
+            text-align: center;
+            max-width: 90%;
+            backdrop-filter: blur(10px);
+            transition: opacity 0.3s ease;
+        }
+
+        #status.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        /* Loading Spinner */
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            vertical-align: middle;
+            margin-right: 8px;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        /* Error Message Overlay */
+        #error-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.9);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            padding: 20px;
+        }
+
+        #error-overlay.show {
+            display: flex;
+        }
+
+        .error-content {
+            background: #1a1a1a;
+            border: 2px solid #ff4444;
+            border-radius: 12px;
+            padding: 30px;
+            max-width: 500px;
+            text-align: center;
+        }
+
+        .error-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+
+        .error-title {
+            color: #ff4444;
+            font-size: 24px;
+            font-weight: bold;
+            margin-bottom: 12px;
+        }
+
+        .error-message {
+            color: #ccc;
+            font-size: 16px;
+            line-height: 1.5;
+            margin-bottom: 20px;
+        }
+
+        .error-details {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 6px;
+            padding: 12px;
+            margin-top: 16px;
+            font-size: 13px;
+            color: #999;
+            text-align: left;
+            font-family: monospace;
+        }
+
+        .retry-button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        .retry-button:hover {
+            background: #45a049;
+        }
+
+        /* Target Detection Indicator */
+        #target-indicator {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(76, 175, 80, 0.9);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: bold;
+            z-index: 100;
+            display: none;
+        }
+
+        #target-indicator.active {
+            display: block;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.7;
+            }
+        }
+
+        /* Responsive adjustments */
+        @media (max-width: 768px) {
+            #status {
+                font-size: 12px;
+                padding: 10px 16px;
+            }
+
+            .error-content {
+                padding: 20px;
+            }
+
+            .error-title {
+                font-size: 20px;
+            }
+
+            .error-message {
+                font-size: 14px;
+            }
+        }
+    </style>
+
+    <!-- Import Maps Polyfill -->
+    <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+
+    <!-- Import Map -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+                "mindar-image-three": "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"
+            }
+        }
+    </script>
+</head>
+
+<body>
+    <!-- AR Container -->
+    <div id="ar-container"></div>
+
+    <!-- Status Message -->
+    <div id="status">
+        <span class="spinner"></span>
+        <span id="status-text">Initializing AR...</span>
+    </div>
+
+    <!-- Target Detection Indicator -->
+    <div id="target-indicator">🎯 Target Detected</div>
+
+    <!-- Error Overlay -->
+    <div id="error-overlay">
+        <div class="error-content">
+            <div class="error-icon">⚠️</div>
+            <div class="error-title" id="error-title">Error</div>
+            <div class="error-message" id="error-message"></div>
+            <button class="retry-button" onclick="location.reload()">Retry</button>
+            <div class="error-details" id="error-details" style="display: none;"></div>
+        </div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { MindARThree } from 'mindar-image-three';
+
+        // Configuration
+        const CONFIG = {
+            targetFile: './targets.mind',
+            videoFile: './tracker.mp4',
+            maxTrack: 1, // Track one target at a time
+            uiScanning: 'no', // Disable default UI
+            uiLoading: 'no' // Disable default UI
+        };
+
+        // State management
+        let mindarThree;
+        let video;
+        let videoTexture;
+        let isTargetVisible = false;
+
+        // UI Elements
+        const statusEl = document.getElementById('status');
+        const statusText = document.getElementById('status-text');
+        const errorOverlay = document.getElementById('error-overlay');
+        const targetIndicator = document.getElementById('target-indicator');
+
+        // Update status message
+        function updateStatus(message, hideAfter = 0) {
+            statusText.textContent = message;
+            statusEl.classList.remove('hidden');
+
+            if (hideAfter > 0) {
+                setTimeout(() => {
+                    statusEl.classList.add('hidden');
+                }, hideAfter);
+            }
+        }
+
+        // Show error overlay
+        function showError(title, message, details = null) {
+            document.getElementById('error-title').textContent = title;
+            document.getElementById('error-message').textContent = message;
+
+            const detailsEl = document.getElementById('error-details');
+            if (details) {
+                detailsEl.textContent = details;
+                detailsEl.style.display = 'block';
+            } else {
+                detailsEl.style.display = 'none';
+            }
+
+            errorOverlay.classList.add('show');
+            statusEl.classList.add('hidden');
+        }
+
+        // Initialize AR application
+        async function initAR() {
+            try {
+                updateStatus('Requesting camera access...');
+
+                // Create MindAR Three.js instance
+                mindarThree = new MindARThree({
+                    container: document.getElementById('ar-container'),
+                    imageTargetSrc: CONFIG.targetFile,
+                    maxTrack: CONFIG.maxTrack,
+                    uiScanning: CONFIG.uiScanning,
+                    uiLoading: CONFIG.uiLoading
+                });
+
+                const { renderer, scene, camera } = mindarThree;
+
+                // Create anchor for target
+                const anchor = mindarThree.addAnchor(0);
+
+                // Create video element
+                video = document.createElement('video');
+                video.src = CONFIG.videoFile;
+                video.loop = true;
+                video.muted = false; // Enable audio
+                video.playsInline = true; // Required for iOS
+                video.crossOrigin = 'anonymous';
+                video.preload = 'auto';
+
+                // Wait for video metadata to load
+                await new Promise((resolve, reject) => {
+                    video.addEventListener('loadedmetadata', resolve);
+                    video.addEventListener('error', (e) => {
+                        reject(new Error(`Video loading failed: ${e.message || 'Unknown error'}`));
+                    });
+                    updateStatus('Loading video...');
+                });
+
+                // Create video texture
+                videoTexture = new THREE.VideoTexture(video);
+                videoTexture.minFilter = THREE.LinearFilter;
+                videoTexture.magFilter = THREE.LinearFilter;
+
+                // Get video aspect ratio
+                const videoAspect = video.videoWidth / video.videoHeight;
+
+                // Create video plane geometry (2D overlay)
+                const geometry = new THREE.PlaneGeometry(1, 1 / videoAspect);
+                const material = new THREE.MeshBasicMaterial({
+                    map: videoTexture,
+                    transparent: true,
+                    side: THREE.DoubleSide
+                });
+
+                const plane = new THREE.Mesh(geometry, material);
+                anchor.group.add(plane);
+
+                // Target found event
+                anchor.onTargetFound = () => {
+                    console.log('Target found');
+                    isTargetVisible = true;
+                    targetIndicator.classList.add('active');
+
+                    // Resume video (don't restart)
+                    if (video.paused) {
+                        video.play().catch(err => {
+                            console.warn('Video play failed:', err);
+                            // Some browsers require user interaction for autoplay
+                            // This is handled by the fact that the user is interacting with the camera
+                        });
+                    }
+                };
+
+                // Target lost event
+                anchor.onTargetLost = () => {
+                    console.log('Target lost');
+                    isTargetVisible = false;
+                    targetIndicator.classList.remove('active');
+
+                    // Pause video (preserve position)
+                    if (!video.paused) {
+                        video.pause();
+                    }
+                };
+
+                // Start AR
+                updateStatus('Starting camera...');
+                await mindarThree.start();
+
+                updateStatus('Point camera at target image', 3000);
+
+                // Render loop
+                renderer.setAnimationLoop(() => {
+                    renderer.render(scene, camera);
+                });
+
+            } catch (error) {
+                console.error('AR initialization error:', error);
+                handleError(error);
+            }
+        }
+
+        // Error handler
+        function handleError(error) {
+            let title = 'AR Initialization Failed';
+            let message = 'An error occurred while starting the AR experience.';
+            let details = error.message;
+
+            // Camera permission errors
+            if (error.name === 'NotAllowedError' || error.message.includes('permission')) {
+                title = 'Camera Access Denied';
+                message = 'Please allow camera access to use this AR experience. Check your browser settings and reload the page.';
+            }
+            // Target file not found
+            else if (error.message.includes('targets.mind') || error.message.includes('404')) {
+                title = 'Target File Missing';
+                message = 'The targets.mind file was not found. Please compile your target image using the MindAR compiler and place it in the project directory.';
+                details = 'Visit: https://hiukim.github.io/mind-ar-js-doc/tools/compile';
+            }
+            // Video loading errors
+            else if (error.message.includes('video') || error.message.includes('tracker.mp4')) {
+                title = 'Video Loading Failed';
+                message = 'Could not load the video file (tracker.mp4). Please ensure the file exists and is accessible.';
+            }
+            // HTTPS requirement
+            else if (error.message.includes('secure context') || error.message.includes('https')) {
+                title = 'HTTPS Required';
+                message = 'Camera access requires a secure connection (HTTPS) or localhost. Please access this page via HTTPS or localhost.';
+            }
+            // Browser compatibility
+            else if (error.message.includes('getUserMedia') || error.message.includes('not supported')) {
+                title = 'Browser Not Supported';
+                message = 'Your browser does not support the required AR features. Please use Chrome, Safari, or Firefox on a mobile device.';
+            }
+
+            showError(title, message, details);
+        }
+
+        // Check for HTTPS or localhost
+        function checkSecureContext() {
+            if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+                showError(
+                    'Insecure Connection',
+                    'Camera access requires HTTPS or localhost. Please serve this page over HTTPS or access it via localhost.',
+                    `Current protocol: ${location.protocol}\nCurrent hostname: ${location.hostname}`
+                );
+                return false;
+            }
+            return true;
+        }
+
+        // Initialize on page load
+        window.addEventListener('load', () => {
+            if (checkSecureContext()) {
+                initAR();
+            }
+        });
+
+        // Handle orientation changes on mobile
+        window.addEventListener('orientationchange', () => {
+            setTimeout(() => {
+                location.reload();
+            }, 100);
+        });
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (mindarThree) {
+                mindarThree.stop();
+            }
+            if (video) {
+                video.pause();
+                video.src = '';
+            }
+        });
+    </script>
+</body>
+
+</html>
