@@ -238,235 +238,264 @@
         </div>
     </div>
 
-    <script type="module">
-        import * as THREE from 'three';
-        import { MindARThree } from 'mindar-image-three';
+<script type="module">
+  import * as THREE from 'three';
+  import { MindARThree } from 'mindar-image-three';
 
-        // Configuration
-        const CONFIG = {
-            targetFile: './targets.mind',
-            videoFile: './tracker.mp4',
-            maxTrack: 1, // Track one target at a time
-            uiScanning: 'no', // Disable default UI
-            uiLoading: 'no' // Disable default UI
+  // تنظیمات
+  const CONFIG = {
+    targetFile: './targets.mind',
+    videoFile: './tracker.mp4',
+    maxTrack: 1,
+    uiScanning: 'no',
+    uiLoading: 'no',
+
+    // --------- تنظیمات فیلتر داخلی MindAR ----------
+    // این مقادیر معمولا jitter را خیلی کم می‌کنند
+    filterMinCF: 0.0001,
+    filterBeta: 0.001,
+    warmupTolerance: 3,
+    missTolerance: 3,
+
+    // --------- تنظیمات سافت‌کردن اضافی ----------
+    // هر چه عدد بزرگ‌تر، نرم‌تر (ولی کمی تاخیر بیشتر)
+    smoothingFactor: 0.18
+  };
+
+  let mindarThree;
+  let video;
+  let videoTexture;
+  let isTargetVisible = false;
+
+  const statusEl = document.getElementById('status');
+  const statusText = document.getElementById('status-text');
+  const errorOverlay = document.getElementById('error-overlay');
+  const targetIndicator = document.getElementById('target-indicator');
+
+  function updateStatus(message, hideAfter = 0) {
+    statusText.textContent = message;
+    statusEl.classList.remove('hidden');
+    if (hideAfter > 0) {
+      setTimeout(() => statusEl.classList.add('hidden'), hideAfter);
+    }
+  }
+
+  function showError(title, message, details = null) {
+    document.getElementById('error-title').textContent = title;
+    document.getElementById('error-message').textContent = message;
+    const detailsEl = document.getElementById('error-details');
+    if (details) {
+      detailsEl.textContent = details;
+      detailsEl.style.display = 'block';
+    } else {
+      detailsEl.style.display = 'none';
+    }
+    errorOverlay.classList.add('show');
+    statusEl.classList.add('hidden');
+  }
+
+  function handleError(error) {
+    let title = 'AR Initialization Failed';
+    let message = 'An error occurred while starting the AR experience.';
+    let details = error.message;
+
+    if (error.name === 'NotAllowedError' || error.message.includes('permission')) {
+      title = 'Camera Access Denied';
+      message = 'Please allow camera access to use this AR experience. Check your browser settings and reload the page.';
+    } else if (error.message.includes('targets.mind') || error.message.includes('404')) {
+      title = 'Target File Missing';
+      message = 'The targets.mind file was not found. Please compile your target image using the MindAR compiler and place it in the project directory.';
+      details = 'Visit: https://hiukim.github.io/mind-ar-js-doc/tools/compile';
+    } else if (error.message.includes('video') || error.message.includes('tracker.mp4')) {
+      title = 'Video Loading Failed';
+      message = 'Could not load the video file (tracker.mp4). Please ensure the file exists and is accessible.';
+    } else if (error.message.includes('secure context') || error.message.includes('https')) {
+      title = 'HTTPS Required';
+      message = 'Camera access requires a secure connection (HTTPS) or localhost. Please access this page via HTTPS or localhost.';
+    } else if (error.message.includes('getUserMedia') || error.message.includes('not supported')) {
+      title = 'Browser Not Supported';
+      message = 'Your browser does not support the required AR features. Please use Chrome, Safari, or Firefox on a mobile device.';
+    }
+
+    showError(title, message, details);
+  }
+
+  async function initAR() {
+    try {
+      updateStatus('Requesting camera access...');
+
+      // MindAR + Three
+      mindarThree = new MindARThree({
+        container: document.getElementById('ar-container'),
+        imageTargetSrc: CONFIG.targetFile,
+        maxTrack: CONFIG.maxTrack,
+        uiScanning: CONFIG.uiScanning,
+        uiLoading: CONFIG.uiLoading,
+
+        // تنظیمات فیلتر داخلی
+        filterMinCF: CONFIG.filterMinCF,
+        filterBeta: CONFIG.filterBeta,
+        warmupTolerance: CONFIG.warmupTolerance,
+        missTolerance: CONFIG.missTolerance
+      });
+
+      const { renderer, scene, camera } = mindarThree;
+
+      // کمی بهبود برای رندر
+      renderer.setPixelRatio(window.devicePixelRatio || 1);
+
+      // Anchor
+      const anchor = mindarThree.addAnchor(0);
+
+      // ویدیو
+      video = document.createElement('video');
+      video.src = CONFIG.videoFile;
+      video.loop = true;
+      video.muted = false;       // اگر برای autoplay مشکل داشت، موقتا true کن
+      video.playsInline = true;
+      video.crossOrigin = 'anonymous';
+      video.preload = 'auto';
+
+      await new Promise((resolve, reject) => {
+        const onLoaded = () => {
+          video.removeEventListener('loadedmetadata', onLoaded);
+          resolve();
         };
+        const onError = (e) => {
+          reject(new Error(`Video loading failed`));
+        };
+        video.addEventListener('loadedmetadata', onLoaded);
+        video.addEventListener('error', onError);
+        updateStatus('Loading video...');
+      });
 
-        // State management
-        let mindarThree;
-        let video;
-        let videoTexture;
-        let isTargetVisible = false;
+      // تکسچر ویدیو
+      videoTexture = new THREE.VideoTexture(video);
+      videoTexture.minFilter = THREE.LinearFilter;
+      videoTexture.magFilter = THREE.LinearFilter;
 
-        // UI Elements
-        const statusEl = document.getElementById('status');
-        const statusText = document.getElementById('status-text');
-        const errorOverlay = document.getElementById('error-overlay');
-        const targetIndicator = document.getElementById('target-indicator');
+      const videoAspect = video.videoWidth / video.videoHeight;
+      const geometry = new THREE.PlaneGeometry(1, 1 / videoAspect);
+      const material = new THREE.MeshBasicMaterial({
+        map: videoTexture,
+        transparent: true,
+        side: THREE.DoubleSide
+      });
+      const plane = new THREE.Mesh(geometry, material);
 
-        // Update status message
-        function updateStatus(message, hideAfter = 0) {
-            statusText.textContent = message;
-            statusEl.classList.remove('hidden');
+      // ------------- گروه نرم‌شده (smoothed group) -------------
+      const smoothedGroup = new THREE.Group();
+      smoothedGroup.visible = false;
+      scene.add(smoothedGroup);
+      smoothedGroup.add(plane);
 
-            if (hideAfter > 0) {
-                setTimeout(() => {
-                    statusEl.classList.add('hidden');
-                }, hideAfter);
-            }
+      // متغیرهای کمکی برای smoothing
+      const tmpPosition = new THREE.Vector3();
+      const tmpQuaternion = new THREE.Quaternion();
+      const tmpScale = new THREE.Vector3();
+      let hasInitialPose = false;
+
+      // رویدادها
+      anchor.onTargetFound = () => {
+        console.log('Target found');
+        isTargetVisible = true;
+        targetIndicator.classList.add('active');
+
+        if (video.paused) {
+          video.play().catch(err => {
+            console.warn('Video play failed:', err);
+          });
+        }
+      };
+
+      anchor.onTargetLost = () => {
+        console.log('Target lost');
+        isTargetVisible = false;
+        targetIndicator.classList.remove('active');
+
+        if (!video.paused) {
+          video.pause();
+        }
+      };
+
+      // شروع AR
+      updateStatus('Starting camera...');
+      await mindarThree.start();
+      updateStatus('Point camera at target image', 3000);
+
+      // حلقه‌ی رندر + smoothing
+      renderer.setAnimationLoop(() => {
+        if (isTargetVisible) {
+          // پوز anchor را در فضای جهانی می‌گیریم
+          anchor.group.getWorldPosition(tmpPosition);
+          anchor.group.getWorldQuaternion(tmpQuaternion);
+          anchor.group.getWorldScale(tmpScale);
+
+          if (!hasInitialPose) {
+            // اولین فریم: کپی مستقیم
+            smoothedGroup.position.copy(tmpPosition);
+            smoothedGroup.quaternion.copy(tmpQuaternion);
+            smoothedGroup.scale.copy(tmpScale);
+            hasInitialPose = true;
+          } else {
+            // فریم‌های بعدی: حرکت نرم بین مقدار قبلی و جدید
+            smoothedGroup.position.lerp(tmpPosition, CONFIG.smoothingFactor);
+            smoothedGroup.quaternion.slerp(tmpQuaternion, CONFIG.smoothingFactor);
+            smoothedGroup.scale.lerp(tmpScale, CONFIG.smoothingFactor);
+          }
+
+          smoothedGroup.visible = true;
+        } else {
+          smoothedGroup.visible = false;
+          hasInitialPose = false;
         }
 
-        // Show error overlay
-        function showError(title, message, details = null) {
-            document.getElementById('error-title').textContent = title;
-            document.getElementById('error-message').textContent = message;
+        renderer.render(scene, camera);
+      });
 
-            const detailsEl = document.getElementById('error-details');
-            if (details) {
-                detailsEl.textContent = details;
-                detailsEl.style.display = 'block';
-            } else {
-                detailsEl.style.display = 'none';
-            }
+    } catch (error) {
+      console.error('AR initialization error:', error);
+      handleError(error);
+    }
+  }
 
-            errorOverlay.classList.add('show');
-            statusEl.classList.add('hidden');
-        }
+  function checkSecureContext() {
+    if (location.protocol !== 'https:' &&
+        location.hostname !== 'localhost' &&
+        location.hostname !== '127.0.0.1') {
+      showError(
+        'Insecure Connection',
+        'Camera access requires HTTPS or localhost. Please serve this page over HTTPS or access it via localhost.',
+        `Current protocol: ${location.protocol}\nCurrent hostname: ${location.hostname}`
+      );
+      return false;
+    }
+    return true;
+  }
 
-        // Initialize AR application
-        async function initAR() {
-            try {
-                updateStatus('Requesting camera access...');
+  window.addEventListener('load', () => {
+    if (checkSecureContext()) {
+      initAR();
+    }
+  });
 
-                // Create MindAR Three.js instance
-                mindarThree = new MindARThree({
-                    container: document.getElementById('ar-container'),
-                    imageTargetSrc: CONFIG.targetFile,
-                    maxTrack: CONFIG.maxTrack,
-                    uiScanning: CONFIG.uiScanning,
-                    uiLoading: CONFIG.uiLoading
-                });
+  window.addEventListener('orientationchange', () => {
+    setTimeout(() => {
+      location.reload();
+    }, 100);
+  });
 
-                const { renderer, scene, camera } = mindarThree;
+  window.addEventListener('beforeunload', () => {
+    if (mindarThree) {
+      mindarThree.stop();
+    }
+    if (video) {
+      video.pause();
+      video.src = '';
+    }
+  });
+</script>
 
-                // Create anchor for target
-                const anchor = mindarThree.addAnchor(0);
-
-                // Create video element
-                video = document.createElement('video');
-                video.src = CONFIG.videoFile;
-                video.loop = true;
-                video.muted = false; // Enable audio
-                video.playsInline = true; // Required for iOS
-                video.crossOrigin = 'anonymous';
-                video.preload = 'auto';
-
-                // Wait for video metadata to load
-                await new Promise((resolve, reject) => {
-                    video.addEventListener('loadedmetadata', resolve);
-                    video.addEventListener('error', (e) => {
-                        reject(new Error(`Video loading failed: ${e.message || 'Unknown error'}`));
-                    });
-                    updateStatus('Loading video...');
-                });
-
-                // Create video texture
-                videoTexture = new THREE.VideoTexture(video);
-                videoTexture.minFilter = THREE.LinearFilter;
-                videoTexture.magFilter = THREE.LinearFilter;
-
-                // Get video aspect ratio
-                const videoAspect = video.videoWidth / video.videoHeight;
-
-                // Create video plane geometry (2D overlay)
-                const geometry = new THREE.PlaneGeometry(1, 1 / videoAspect);
-                const material = new THREE.MeshBasicMaterial({
-                    map: videoTexture,
-                    transparent: true,
-                    side: THREE.DoubleSide
-                });
-
-                const plane = new THREE.Mesh(geometry, material);
-                anchor.group.add(plane);
-
-                // Target found event
-                anchor.onTargetFound = () => {
-                    console.log('Target found');
-                    isTargetVisible = true;
-                    targetIndicator.classList.add('active');
-
-                    // Resume video (don't restart)
-                    if (video.paused) {
-                        video.play().catch(err => {
-                            console.warn('Video play failed:', err);
-                            // Some browsers require user interaction for autoplay
-                            // This is handled by the fact that the user is interacting with the camera
-                        });
-                    }
-                };
-
-                // Target lost event
-                anchor.onTargetLost = () => {
-                    console.log('Target lost');
-                    isTargetVisible = false;
-                    targetIndicator.classList.remove('active');
-
-                    // Pause video (preserve position)
-                    if (!video.paused) {
-                        video.pause();
-                    }
-                };
-
-                // Start AR
-                updateStatus('Starting camera...');
-                await mindarThree.start();
-
-                updateStatus('Point camera at target image', 3000);
-
-                // Render loop
-                renderer.setAnimationLoop(() => {
-                    renderer.render(scene, camera);
-                });
-
-            } catch (error) {
-                console.error('AR initialization error:', error);
-                handleError(error);
-            }
-        }
-
-        // Error handler
-        function handleError(error) {
-            let title = 'AR Initialization Failed';
-            let message = 'An error occurred while starting the AR experience.';
-            let details = error.message;
-
-            // Camera permission errors
-            if (error.name === 'NotAllowedError' || error.message.includes('permission')) {
-                title = 'Camera Access Denied';
-                message = 'Please allow camera access to use this AR experience. Check your browser settings and reload the page.';
-            }
-            // Target file not found
-            else if (error.message.includes('targets.mind') || error.message.includes('404')) {
-                title = 'Target File Missing';
-                message = 'The targets.mind file was not found. Please compile your target image using the MindAR compiler and place it in the project directory.';
-                details = 'Visit: https://hiukim.github.io/mind-ar-js-doc/tools/compile';
-            }
-            // Video loading errors
-            else if (error.message.includes('video') || error.message.includes('tracker.mp4')) {
-                title = 'Video Loading Failed';
-                message = 'Could not load the video file (tracker.mp4). Please ensure the file exists and is accessible.';
-            }
-            // HTTPS requirement
-            else if (error.message.includes('secure context') || error.message.includes('https')) {
-                title = 'HTTPS Required';
-                message = 'Camera access requires a secure connection (HTTPS) or localhost. Please access this page via HTTPS or localhost.';
-            }
-            // Browser compatibility
-            else if (error.message.includes('getUserMedia') || error.message.includes('not supported')) {
-                title = 'Browser Not Supported';
-                message = 'Your browser does not support the required AR features. Please use Chrome, Safari, or Firefox on a mobile device.';
-            }
-
-            showError(title, message, details);
-        }
-
-        // Check for HTTPS or localhost
-        function checkSecureContext() {
-            if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-                showError(
-                    'Insecure Connection',
-                    'Camera access requires HTTPS or localhost. Please serve this page over HTTPS or access it via localhost.',
-                    `Current protocol: ${location.protocol}\nCurrent hostname: ${location.hostname}`
-                );
-                return false;
-            }
-            return true;
-        }
-
-        // Initialize on page load
-        window.addEventListener('load', () => {
-            if (checkSecureContext()) {
-                initAR();
-            }
-        });
-
-        // Handle orientation changes on mobile
-        window.addEventListener('orientationchange', () => {
-            setTimeout(() => {
-                location.reload();
-            }, 100);
-        });
-
-        // Cleanup on page unload
-        window.addEventListener('beforeunload', () => {
-            if (mindarThree) {
-                mindarThree.stop();
-            }
-            if (video) {
-                video.pause();
-                video.src = '';
-            }
-        });
-    </script>
 </body>
 
 </html>
